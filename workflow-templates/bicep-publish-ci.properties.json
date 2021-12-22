@@ -1,0 +1,8 @@
+{
+    "name": "Bicep Publish to ACR Workflow",
+    "description": "Bicep Publish to Azure Container Registry CI workflow.",
+    "iconName": "bicep-emoji",
+    "categories": [
+        "Bicep"
+    ]
+}

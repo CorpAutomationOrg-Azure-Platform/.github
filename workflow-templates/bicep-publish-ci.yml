@@ -1,0 +1,83 @@
+# This is a Bicep workflow to publish modules in you repo to a Azure Container Registry
+name: Bicep-Module-Pipeline
+
+# Tirggers
+on:
+  push:
+  delete:
+  release:
+    types: [published]
+
+
+jobs:
+  publish-module:
+    runs-on: ubuntu-latest
+
+    # Variables used in the actions     
+    env:
+      acr_url: "changeme.azurecr.io"
+      acr_path: "path-to-repo"
+      acr_subscription: "00000000-0000-0000-0000-000000000000"
+      acr_tenantid: "00000000-0000-0000-0000-000000000000"
+
+    # Use latest container image to get powershell =< 7.0.0, this to have the latest bicep cmdlets
+    # This can be removed when hosted agents have the correct pscore version
+    container: mcr.microsoft.com/azure-powershell
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v2
+      
+      # The container image does not have bicep installed by default, need to install and add to path
+      # This can be removed when hosted agents have the correct tooling
+      - name: Install Bicep
+        run: |
+          # Fetch the latest Bicep CLI binary
+          curl -Lo bicep https://github.com/Azure/bicep/releases/latest/download/bicep-linux-x64
+          # Mark it as executable
+          chmod +x ./bicep
+          # Add bicep to your PATH (requires admin)
+          mv ./bicep /usr/local/bin/bicep
+          # Verify access the 'bicep' command
+          bicep --version
+
+      # Login to azure powershell
+      # This can be changed to built in action  when hosted agets have the correct pscore and az cli version
+      - name: Azure Login
+        shell: pwsh
+        run: |
+          $clientId = "${{ secrets.AAD_SPN_BICEP_ACR_ID }}"
+          $clientKey = ConvertTo-SecureString -String "${{ secrets.AAD_SPN_BICEP_ACR_KEY }}" -AsPlainText -Force 
+          $pscredential = New-Object -TypeName System.Management.Automation.PSCredential($clientId, $clientKey)
+          Connect-AzAccount -ServicePrincipal -Credential $pscredential -Tenant $Env:acr_tenantid -SubscriptionId $Env:acr_subscription
+
+      # A loop that will publish all the .bicep files in the repo, and tag them with github.ref_name (will be branch name on push and tag name on release)
+      - name: "Publish Modules to ACR"
+        if: ${{ github.event_name == 'push' || github.event_name == 'release' }}
+        shell: pwsh
+        run: |
+          $acr = $Env:acr_url
+          $path = $Env:acr_path
+          $tag = "${{ github.ref_name }}"
+          Get-ChildItem -path ./*.bicep -recurse | ForEach-Object `
+          {
+            write-host "Publishing $($_.FullName) ==> br:$acr/$path/$($_.BaseName.ToLower()):$tag "
+            Publish-AzBicepModule -FilePath $_.FullName -Target br:$acr/$path/$($_.BaseName.ToLower()):$tag
+          }
+            
+      # remove the container repo tag from acr
+      - name: "Remove Azure Container Image"
+        if: ${{ github.event_name == 'delete' }}
+        shell: pwsh
+        run: |
+          $acr = $Env:acr_url
+          $path = $Env:acr_path 
+          $tag = "${{ github.event.ref }}"
+          
+          $reg = Get-AzContainerRegistry | where LoginServer -contains "$acr"
+          
+          Get-ChildItem -path ./*.bicep -recurse | ForEach-Object `
+          {
+            write-host "Removing $acr/$path/$($_.BaseName.ToLower()):$tag "
+            Remove-AzContainerRegistryTag -RegistryName $reg.Name  -RepositoryName $path/$($_.BaseName.ToLower()) -Name "$tag"
+          }
